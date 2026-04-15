@@ -1,9 +1,15 @@
 import dotenv
 
 dotenv.load_dotenv()
+from openai import OpenAI
 import asyncio
 import streamlit as st
-from agents import Agent, Runner, SQLiteSession, WebSearchTool
+from agents import Agent, Runner, SQLiteSession, WebSearchTool, FileSearchTool
+
+client = OpenAI()
+
+VECTOR_STORE_ID = "vs_69dfa1f2e36081919fa6db8f3281ab00"
+
 
 if "agent" not in st.session_state:
     st.session_state["agent"] = Agent(
@@ -36,6 +42,10 @@ if "agent" not in st.session_state:
         """,
         tools=[
             WebSearchTool(),
+            FileSearchTool(
+                vector_store_ids=[VECTOR_STORE_ID], 
+                max_num_results=3, 
+            ),
         ],
     )
 agent = st.session_state["agent"]
@@ -59,9 +69,14 @@ async def paint_history():
                 else:
                     if message["type"] == "message":
                         st.write(message["content"][0]["text"])
-        if "type" in message and message["type"] == "web_search_call":
-            with st.chat_message("ai"):
-                st.write("🕵 Searched the web...")
+        if "type" in message :
+            if message["type"] == "web_search_call":
+                with st.chat_message("ai"):
+                    st.write("🕵 Searched the web...")
+            elif message["type"] == "file_search_call":
+                with st.chat_message("ai"):
+                    st.write("🕵 Searched your file...")
+
 
 def update_status(status_container, event):
     
@@ -73,6 +88,15 @@ def update_status(status_container, event):
         ),
         "response.web_search_call.searching": (
             "🔍 Web search in progress...",
+            "running",
+        ),
+        "response.file_search_call.completed": ("✅ file search completed.", "complete"),
+        "response.file_search_call.in_progress": (
+            "📂 Starting file search...",
+            "running",
+        ),
+        "response.file_search_call.searching": (
+            "📂 File search in progress...",
             "running",
         ),
         "response.completed": (" ", "complete"),
@@ -107,12 +131,30 @@ async def run_agent(message):
                     text_placeholder.write(response)
 
 
-prompt = st.chat_input("Write a message for your life coach agent")
+prompt = st.chat_input("Write a message for your life coach agent", accept_file=True, file_type=["txt", "pdf"],)
 
 if prompt:
-    with st.chat_message("human"):
-        st.write(prompt)
-    asyncio.run(run_agent(prompt))
+
+    for file in prompt.files:
+        if file.type.startswith("text/"):
+            with st.chat_message("ai"):
+                with st.status("⏳ Uploading file...") as status:
+                    uploaded_file = client.files.create(
+                        file=(file.name, file.getvalue()),
+                        purpose="user_data",
+                    )
+                    status.update(label="🗂️ Attaching file...")
+                    client.vector_stores.files.create(
+                        vector_store_id=VECTOR_STORE_ID,
+                        file_id=uploaded_file.id
+                    )
+                    status.update(label="⌛️ File Uploaded", state="complete")
+                
+
+    if prompt.text:
+        with st.chat_message("human"):
+            st.write(prompt.text)
+        asyncio.run(run_agent(prompt.text))
 
 
 with st.sidebar:
